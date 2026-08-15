@@ -21,19 +21,22 @@
     "files": [
       "src/**/*",
       "build/icon.ico",
+      "build/icon.png",
       "package.json"
     ],
-    "icon": "build/icon.ico",
-    "asar": true,
+    "asar": false,
     "npmRebuild": false,
     "mac": {
+      "icon": "build/icon.png",
       "target": ["dmg", "zip"],
       "category": "public.app-category.developer-tools"
     },
     "win": {
+      "icon": "build/icon.ico",
       "target": ["nsis", "portable"]
     },
     "linux": {
+      "icon": "build/icon.png",
       "target": ["AppImage"],
       "category": "Development"
     }

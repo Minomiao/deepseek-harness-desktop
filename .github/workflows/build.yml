@@ -1,0 +1,49 @@
+name: Build
+
+on:
+  workflow_dispatch: # 手动触发
+  push:
+    tags: ["v*"] # 打 tag 自动构建
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            args: --win
+            ext: exe
+          - os: macos-latest
+            args: --mac
+            ext: dmg
+          - os: ubuntu-latest
+            args: --linux
+            ext: AppImage
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build ${{ matrix.os }}
+        run: npx electron-builder ${{ matrix.args }}
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false" # 跳过代码签名
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dsh-desktop-${{ matrix.os }}
+          path: |
+            dist/*.${{ matrix.ext }}
+            dist/*.zip
+            dist/win-unpacked/DSH Desktop.exe
+          if-no-files-found: warn
+          retention-days: 30
