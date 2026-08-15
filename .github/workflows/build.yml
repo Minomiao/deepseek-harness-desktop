@@ -33,7 +33,7 @@ jobs:
         run: npm ci
 
       - name: Build ${{ matrix.os }}
-        run: npx electron-builder ${{ matrix.args }}
+        run: npx electron-builder ${{ matrix.args }} --publish never
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false" # 跳过代码签名
 
