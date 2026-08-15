@@ -2,7 +2,7 @@
 
 DeepSeek Harness Web 界面的桌面客户端（跨平台）。
 
-## 这是什么
+## 项目简介
 
 DeepSeek Harness 是 DeepSeek 官方的 Agent 开发框架，原版通过命令行 `npx @deepseek-ai/dsh web` 启动服务后在浏览器访问。本项目用 Electron 把它封装成桌面应用：
 
