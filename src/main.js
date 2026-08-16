@@ -12,7 +12,7 @@
  *  - 窗口关闭即停掉 dsh 进程树（Windows 用 taskkill /T /F，POSIX 用 SIGTERM→SIGKILL）。
  */
 
-const { app, BrowserWindow, ipcMain, Menu, nativeTheme } = require('electron');
+const { app, BrowserWindow, ipcMain, Menu, nativeTheme, Tray } = require('electron');
 const { spawn, execFile } = require('node:child_process');
 const path = require('node:path');
 const fs = require('node:fs');
@@ -28,6 +28,11 @@ let mainWindow = null;
 let dshProcess = null;
 let dshUrl = null;
 let stopping = false;
+
+// 托盘：关闭窗口时最小化到系统托盘，dsh 本地服务继续运行
+let tray = null;
+let trayEnabled = false;
+let isQuitting = false;
 
 const state = {
   status: 'starting', // starting | ready | error
@@ -202,6 +207,14 @@ function createWindow() {
     mainWindow = null;
   });
 
+  // 关闭按钮 → 最小化到系统托盘（托盘不可用时保持原“关窗即退出”行为）
+  mainWindow.on('close', (event) => {
+    if (!isQuitting && trayEnabled) {
+      event.preventDefault();
+      mainWindow.hide();
+    }
+  });
+
   // 窗口标题由本应用掌控：阻止页面 <title> 覆盖，并按启动状态显示
   mainWindow.on('page-title-updated', (event) => {
     event.preventDefault();
@@ -210,6 +223,39 @@ function createWindow() {
 
   // 先展示本地 loading 页，dsh URL 就绪后再切过去
   mainWindow.loadFile(path.join(__dirname, 'loading.html'));
+}
+
+/** 显示并聚焦主窗口（托盘点击 / 菜单唤起）。 */
+function showMainWindow() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+}
+
+/** 创建系统托盘：点击显示窗口，菜单提供“显示主窗口 / 退出”。 */
+function createTray() {
+  try {
+    const iconPath =
+      process.platform === 'win32'
+        ? path.join(__dirname, '..', 'build', 'icon.ico')
+        : path.join(__dirname, '..', 'build', 'icon.png');
+    tray = new Tray(iconPath);
+    tray.setToolTip('DSH Desktop');
+    tray.setContextMenu(
+      Menu.buildFromTemplate([
+        { label: '显示主窗口', click: showMainWindow },
+        { type: 'separator' },
+        { label: '退出', click: () => app.quit() },
+      ])
+    );
+    // Windows/Linux：左键单击托盘图标直接显示窗口；macOS 点击默认弹出菜单
+    if (process.platform !== 'darwin') tray.on('click', showMainWindow);
+    trayEnabled = true;
+  } catch (err) {
+    // 个别 Linux 桌面无托盘支持：退回普通“关窗即退出”行为
+    logTheme(`tray creation failed: ${err.message}`);
+  }
 }
 
 app.whenReady().then(() => {
@@ -240,26 +286,30 @@ app.whenReady().then(() => {
 
   // 启动时即按持久化偏好设置原生主题，避免白屏/标题栏闪色
   applyThemeFromPreference();
+  createTray();
   createWindow();
   startDsh();
 
-  // macOS 惯例：Dock 点击时若无窗口则重建（这里重建即重启服务）
+  // macOS 惯例：Dock 点击时恢复/重建窗口
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       stopping = false;
       dshUrl = null;
       createWindow();
       startDsh();
+    } else {
+      showMainWindow();
     }
   });
 });
 
-// 所有窗口关闭 → 停服务并退出（dsh 是本地服务，关窗后无存在意义）
+// 托盘启用时，窗口关闭只是隐藏，应用与 dsh 服务继续在后台运行；
+// 真正退出走托盘菜单“退出”（before-quit 里停服务）
 app.on('window-all-closed', () => {
-  stopDsh();
-  app.quit();
+  if (process.platform !== 'darwin') app.quit();
 });
 
 app.on('before-quit', () => {
+  isQuitting = true;
   stopDsh();
 });
