@@ -154,8 +154,42 @@ function stopDsh() {
   }
 }
 
+/**
+ * 修复 Windows 上 dsh 的目录选择崩溃（`directory picker failed: win32 folder dialog
+ * worker exited before reporting a result`）。根因：directory-picker-auto 后端的
+ * native 目录对话框用 koffi 调 Windows API，在部分 Node 版本下对堆指针 SIGABRT。
+ * 官方 workaround（deepseek-harness 讨论区 #30/#197）：禁用 auto 后端，换用
+ * 浏览器内置的 browse 后端。仅当 profile 的 cordis.patch.yml 还是空模板时注入；
+ * 用户已自定义 patch 层则不动，避免覆盖用户配置。
+ */
+function ensureDirectoryPickerFix() {
+  if (process.platform !== 'win32') return;
+  const patchPath = path.join(DSH_HOME, 'profiles', 'web', 'cordis.patch.yml');
+  let text;
+  try {
+    text = fs.readFileSync(patchPath, 'utf8');
+  } catch {
+    return;
+  }
+  if (text.includes('directory-picker-browse')) return; // 已处理过
+  // 默认模板带 # 注释行 + 空列表 `[]`：先剔除注释再判断是否仍是空模板，
+  // 否则直接正则匹配整段文本永远失败，修复不会注入。
+  const effective = text
+    .split(/\r?\n/)
+    .filter((line) => !/^\s*#/.test(line))
+    .join('\n')
+    .trim();
+  if (effective !== '[]') return; // 用户已自定义 patch 层，不覆盖
+  fs.writeFileSync(
+    patchPath,
+    `# Your patch layer for this dsh profile, applied after every bundle layer:\n# a top-level YAML array of loader patch entries (id-targeted config\n# overrides, disables, and insert lists; \`!!js\` expressions allowed).\n- id: directory-picker\n  disabled: true\n- insert:\n  - id: directory-picker-browse\n    name: '@deepseek-ai/dsh-host-directory-picker-browse'\n  - id: directory-picker-browse-client\n    name: '@deepseek-ai/dsh-client-ui-directory-picker-browse'\n`
+  );
+  logTheme('directory-picker: Windows 目录选择崩溃修复已注入（auto 后端禁用，改用 browse）');
+}
+
 /** 启动 dsh web 子进程。 */
 function startDsh() {
+  ensureDirectoryPickerFix();
   updateState({ status: 'starting', url: null, error: null });
 
   const child = spawn(process.execPath, [DSH_BIN, 'web', '--port', '0'], {
