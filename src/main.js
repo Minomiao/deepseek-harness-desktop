@@ -24,6 +24,11 @@ const DSH_BIN = require.resolve('@deepseek-ai/dsh/lib/bin.js');
 // dsh web 启动完成后打印的一行：`dsh web: http://127.0.0.1:3080 (LAN: ...)`
 const URL_LINE_RE = /dsh web:\s*(https?:\/\/\S+)/;
 
+// 项目信息：设置窗口“关于”面板与更新检查使用
+const REPO = 'Minomiao/deepseek-harness-desktop';
+const REPO_URL = `https://github.com/${REPO}`;
+const LATEST_RELEASE_API = `https://api.github.com/repos/${REPO}/releases/latest`;
+
 let mainWindow = null;
 let dshProcess = null;
 let dshUrl = null;
@@ -280,7 +285,18 @@ function createTray() {
   }
 }
 
-/** 打开（或聚焦）设置窗口。 */
+/** 简单语义化版本比较：a < b 返回 -1，a == b 返回 0，a > b 返回 1。 */
+function compareVersions(a, b) {
+  const pa = String(a).split('.').map((n) => parseInt(n, 10) || 0);
+  const pb = String(b).split('.').map((n) => parseInt(n, 10) || 0);
+  for (let i = 0; i < 3; i++) {
+    const x = pa[i] || 0;
+    const y = pb[i] || 0;
+    if (x !== y) return x < y ? -1 : 1;
+  }
+  return 0;
+}
+
 function createSettingsWindow() {
   if (settingsWindow && !settingsWindow.isDestroyed()) {
     settingsWindow.show();
@@ -288,11 +304,11 @@ function createSettingsWindow() {
     return;
   }
   settingsWindow = new BrowserWindow({
-    width: 560,
-    height: 680,
-    resizable: false,
-    maximizable: false,
-    fullscreenable: false,
+    width: 800,
+    height: 640,
+    minWidth: 720,
+    minHeight: 520,
+    resizable: true,
     title: 'DSH Desktop 设置',
     autoHideMenuBar: true,
     backgroundColor: uiTheme === 'dark' ? '#151517' : '#ffffff',
@@ -371,7 +387,60 @@ if (!gotTheLock) {
       } catch {
         /* 部分平台不支持 */
       }
-      return { dshHome: DSH_HOME, version: app.getVersion(), bundles, dependencies, autoLaunch, theme: uiTheme };
+      let dshVersion = '';
+      try {
+        const dshPkg = JSON.parse(
+          fs.readFileSync(
+            path.join(path.dirname(require.resolve('@deepseek-ai/dsh/lib/bin.js')), '..', 'package.json'),
+            'utf8'
+          )
+        );
+        dshVersion = dshPkg.version || '';
+      } catch {
+        /* 忽略 */
+      }
+      return {
+        dshHome: DSH_HOME,
+        version: app.getVersion(),
+        dshVersion,
+        electron: process.versions.electron,
+        chromium: process.versions.chrome,
+        node: process.versions.node,
+        bundles,
+        dependencies,
+        autoLaunch,
+        theme: uiTheme,
+        repo: REPO_URL,
+      };
+    });
+
+    // 检查 GitHub 最新 Release 并对比本地版本（GitHub 公开 API，无需鉴权）
+    ipcMain.handle('settings:check-update', async () => {
+      try {
+        const res = await fetch(LATEST_RELEASE_API, {
+          headers: { Accept: 'application/vnd.github+json', 'User-Agent': REPO },
+          signal: AbortSignal.timeout(8000),
+        });
+        if (!res.ok) throw new Error(`GitHub API 返回 ${res.status}`);
+        const rel = await res.json();
+        const latest = String(rel.tag_name || '').replace(/^v/, '');
+        const current = app.getVersion();
+        return {
+          ok: true,
+          hasUpdate: compareVersions(latest, current) > 0,
+          latest,
+          current,
+          url: rel.html_url || `${REPO_URL}/releases`,
+          notes: rel.body || '',
+        };
+      } catch (err) {
+        return { ok: false, error: err.message };
+      }
+    });
+
+    ipcMain.handle('settings:open-external', (_event, url) => {
+      if (typeof url === 'string' && /^https?:\/\//.test(url)) shell.openExternal(url);
+      return { ok: true };
     });
 
     ipcMain.handle('settings:install-plugin', async (_event, name) => {

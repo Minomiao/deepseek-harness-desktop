@@ -20,6 +20,8 @@ contextBridge.exposeInMainWorld('settingsAPI', {
   restartDsh: () => ipcRenderer.invoke('settings:restart-dsh'),
   setAutoLaunch: (enabled) => ipcRenderer.invoke('settings:set-auto-launch', enabled),
   openDataDir: () => ipcRenderer.invoke('settings:open-data-dir'),
+  checkUpdate: () => ipcRenderer.invoke('settings:check-update'),
+  openExternal: (url) => ipcRenderer.invoke('settings:open-external', url),
   onTheme: (cb) => {
     const listener = (_event, payload) => cb(payload.theme);
     ipcRenderer.on('settings:theme', listener);

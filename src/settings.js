@@ -12,12 +12,34 @@ const pluginsEl = document.getElementById('plugins');
 const autoLaunchEl = document.getElementById('autolaunch');
 const dshHomeEl = document.getElementById('dsh-home');
 const btnOpenDir = document.getElementById('btn-open-dir');
-const versionEl = document.getElementById('version');
+
+const sideVersionEl = document.getElementById('side-version');
+const aboutVersionEl = document.getElementById('about-version');
+const aboutDshVersionEl = document.getElementById('about-dsh-version');
+const aboutElectronEl = document.getElementById('about-electron');
+const aboutChromiumEl = document.getElementById('about-chromium');
+const aboutNodeEl = document.getElementById('about-node');
+const btnCheckUpdate = document.getElementById('btn-check-update');
+const btnGithub = document.getElementById('btn-github');
+const btnReleases = document.getElementById('btn-releases');
+const updateResultEl = document.getElementById('update-result');
 
 let busy = false;
+let repoUrl = 'https://github.com/Minomiao/deepseek-harness-desktop';
 
 // 内置 bundle（dsh 自带的 web 基础层），不可卸载
 const BUILTIN_BUNDLES = new Set(['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app']);
+
+// ---- 左侧竖导航切换 ----
+document.querySelectorAll('.nav-item').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.nav-item').forEach((b) => b.classList.remove('active'));
+    btn.classList.add('active');
+    document.querySelectorAll('.panel').forEach((p) => {
+      p.hidden = p.id !== `panel-${btn.dataset.panel}`;
+    });
+  });
+});
 
 function applyTheme(theme) {
   document.documentElement.dataset.theme = theme;
@@ -45,9 +67,16 @@ function clearOutput() {
 async function loadInfo() {
   const info = await api.getInfo();
   applyTheme(info.theme || 'light');
+  if (info.repo) repoUrl = info.repo;
   dshHomeEl.textContent = info.dshHome;
-  versionEl.textContent = `DSH Desktop v${info.version} · DeepSeek Harness`;
   autoLaunchEl.checked = info.autoLaunch;
+
+  sideVersionEl.textContent = info.version;
+  aboutVersionEl.textContent = `v${info.version}`;
+  aboutDshVersionEl.textContent = info.dshVersion || '未知';
+  aboutElectronEl.textContent = info.electron || '';
+  aboutChromiumEl.textContent = info.chromium || '';
+  aboutNodeEl.textContent = info.node || '';
 
   pluginsEl.textContent = '';
   if (info.bundles.length === 0) {
@@ -161,6 +190,30 @@ autoLaunchEl.addEventListener('change', () => {
 btnOpenDir.addEventListener('click', () => {
   api.openDataDir();
 });
+
+// ---- 关于：检查更新 / 外链 ----
+btnCheckUpdate.addEventListener('click', async () => {
+  btnCheckUpdate.disabled = true;
+  updateResultEl.hidden = false;
+  updateResultEl.textContent = '正在检查更新…';
+  try {
+    const res = await api.checkUpdate();
+    if (!res.ok) {
+      updateResultEl.textContent = '检查更新失败：' + (res.error || '网络异常，请稍后重试');
+    } else if (res.hasUpdate) {
+      updateResultEl.textContent = `发现新版本 v${res.latest}（当前 v${res.current}）\n\n${res.notes || '（该版本暂无 Release 说明）'}\n\n下载地址：${res.url}`;
+    } else {
+      updateResultEl.textContent = `已是最新版本 v${res.current}`;
+    }
+  } catch (err) {
+    updateResultEl.textContent = '检查更新失败：' + err.message;
+  } finally {
+    btnCheckUpdate.disabled = false;
+  }
+});
+
+btnGithub.addEventListener('click', () => api.openExternal(repoUrl));
+btnReleases.addEventListener('click', () => api.openExternal(repoUrl + '/releases'));
 
 // 主题实时跟随：主进程在 dsh 主题变化时推送
 api.onTheme(applyTheme);
