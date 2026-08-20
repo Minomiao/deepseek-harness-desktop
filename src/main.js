@@ -12,7 +12,7 @@
  *  - 窗口关闭即停掉 dsh 进程树（Windows 用 taskkill /T /F，POSIX 用 SIGTERM→SIGKILL）。
  */
 
-const { app, BrowserWindow, ipcMain, Menu, nativeTheme, Tray } = require('electron');
+const { app, BrowserWindow, ipcMain, Menu, nativeTheme, Tray, shell } = require('electron');
 const { spawn, execFile } = require('node:child_process');
 const path = require('node:path');
 const fs = require('node:fs');
@@ -33,6 +33,15 @@ let stopping = false;
 let tray = null;
 let trayEnabled = false;
 let isQuitting = false;
+
+// 设置窗口（托盘菜单「设置」打开）：插件管理 + 其他设置
+let settingsWindow = null;
+
+// 当前界面主题（light | dark），跟随 dsh 主题，用于设置窗口配色
+let uiTheme = 'light';
+
+// 内置的独立 pnpm 二进制（@pnpm/exe），加进 PATH 让 `dsh plugin` 无需用户安装 node/pnpm
+const PNPM_DIR = path.dirname(require.resolve('@pnpm/exe/package.json'));
 
 const state = {
   status: 'starting', // starting | ready | error
@@ -106,9 +115,20 @@ function applyThemeFromPreference() {
   const preference = readThemePreference();
   const source = preference === 'dark' || preference === 'light' ? preference : 'system';
   nativeTheme.themeSource = source;
-  logTheme(`applyThemeFromPreference -> preference=${preference}, themeSource=${source}, shouldUseDarkColors=${nativeTheme.shouldUseDarkColors}`);
+  uiTheme = nativeTheme.shouldUseDarkColors ? 'dark' : 'light';
+  logTheme(`applyThemeFromPreference -> preference=${preference}, themeSource=${source}, uiTheme=${uiTheme}, shouldUseDarkColors=${nativeTheme.shouldUseDarkColors}`);
   // 让标题栏覆盖层颜色跟随页面背景色
   syncTitleBarOverlay();
+  // 让设置窗口配色跟随主题
+  syncSettingsTheme();
+}
+
+/** 把当前主题推给设置窗口（配色/窗口底色）。 */
+function syncSettingsTheme() {
+  if (settingsWindow && !settingsWindow.isDestroyed()) {
+    settingsWindow.setBackgroundColor(uiTheme === 'dark' ? '#151517' : '#ffffff');
+    settingsWindow.webContents.send('settings:theme', { theme: uiTheme });
+  }
 }
 
 /** 停掉 dsh 进程树；幂等。 */
@@ -246,6 +266,8 @@ function createTray() {
       Menu.buildFromTemplate([
         { label: '显示主窗口', click: showMainWindow },
         { type: 'separator' },
+        { label: '设置', click: createSettingsWindow },
+        { type: 'separator' },
         { label: '退出', click: () => app.quit() },
       ])
     );
@@ -256,6 +278,63 @@ function createTray() {
     // 个别 Linux 桌面无托盘支持：退回普通“关窗即退出”行为
     logTheme(`tray creation failed: ${err.message}`);
   }
+}
+
+/** 打开（或聚焦）设置窗口。 */
+function createSettingsWindow() {
+  if (settingsWindow && !settingsWindow.isDestroyed()) {
+    settingsWindow.show();
+    settingsWindow.focus();
+    return;
+  }
+  settingsWindow = new BrowserWindow({
+    width: 560,
+    height: 680,
+    resizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    title: 'DSH Desktop 设置',
+    autoHideMenuBar: true,
+    backgroundColor: uiTheme === 'dark' ? '#151517' : '#ffffff',
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
+  });
+  settingsWindow.setMenuBarVisibility(false);
+  settingsWindow.loadFile(path.join(__dirname, 'settings.html'));
+  settingsWindow.on('closed', () => {
+    settingsWindow = null;
+  });
+}
+
+/**
+ * 运行 `dsh plugin --profile web <args...>`（转发给内置 pnpm），
+ * 输出实时转发给设置窗口，返回退出码。
+ */
+function runPluginCommand(args) {
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, [DSH_BIN, 'plugin', '--profile', 'web', ...args], {
+      cwd: DSH_HOME,
+      env: {
+        ...process.env,
+        ELECTRON_RUN_AS_NODE: '1',
+        PATH: PNPM_DIR + path.delimiter + (process.env.PATH || ''),
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+    });
+    const emit = (text) => {
+      if (settingsWindow && !settingsWindow.isDestroyed()) {
+        settingsWindow.webContents.send('settings:plugin-output', text);
+      }
+    };
+    child.stdout.on('data', (buf) => emit(buf.toString()));
+    child.stderr.on('data', (buf) => emit(buf.toString()));
+    child.on('close', (code) => resolve(code ?? 1));
+  });
 }
 
 // 单实例锁：只允许一个实例运行。第二个实例（双击 exe / 再次启动）直接退出，
@@ -271,6 +350,65 @@ if (!gotTheLock) {
     if (process.platform !== 'darwin') Menu.setApplicationMenu(null);
 
     ipcMain.handle('dsh:state', () => ({ ...state }));
+
+    // ---- 设置窗口 IPC：插件管理 + 其他设置 ----
+
+    // 汇总信息：数据目录、版本、已安装插件（bundles）、开机自启状态
+    ipcMain.handle('settings:get-info', () => {
+      const profilePkg = path.join(DSH_HOME, 'profiles', 'web', 'package.json');
+      let bundles = [];
+      let dependencies = [];
+      try {
+        const manifest = JSON.parse(fs.readFileSync(profilePkg, 'utf8'));
+        bundles = manifest.dsh?.profile?.bundles ?? [];
+        dependencies = Object.keys(manifest.dependencies ?? {});
+      } catch {
+        /* web profile 尚未初始化 */
+      }
+      let autoLaunch = false;
+      try {
+        autoLaunch = app.getLoginItemSettings().openAtLogin;
+      } catch {
+        /* 部分平台不支持 */
+      }
+      return { dshHome: DSH_HOME, version: app.getVersion(), bundles, dependencies, autoLaunch, theme: uiTheme };
+    });
+
+    ipcMain.handle('settings:install-plugin', async (_event, name) => {
+      if (!name || !/^[\w@./~-]+$/.test(name)) return { ok: false, message: '包名格式不正确' };
+      const code = await runPluginCommand(['add', name]);
+      return {
+        ok: code === 0,
+        message: code === 0 ? '安装成功，重启服务后生效' : `安装失败（退出码 ${code}）`,
+      };
+    });
+
+    ipcMain.handle('settings:remove-plugin', async (_event, name) => {
+      if (!name || !/^[\w@./~-]+$/.test(name)) return { ok: false, message: '包名格式不正确' };
+      const code = await runPluginCommand(['remove', name]);
+      return { ok: code === 0, message: code === 0 ? '卸载成功' : `卸载失败（退出码 ${code}）` };
+    });
+
+    // 重启 dsh 服务，让新装插件生效
+    ipcMain.handle('settings:restart-dsh', () => {
+      stopDsh();
+      setTimeout(() => {
+        stopping = false;
+        dshUrl = null;
+        startDsh();
+      }, 600);
+      return { ok: true };
+    });
+
+    ipcMain.handle('settings:set-auto-launch', (_event, enabled) => {
+      app.setLoginItemSettings({ openAtLogin: !!enabled });
+      return { ok: true };
+    });
+
+    ipcMain.handle('settings:open-data-dir', () => {
+      shell.openPath(DSH_HOME);
+      return { ok: true };
+    });
 
     // 页面上报了主题变化（<html style="color-scheme"> / <body data-ds-dark-theme> 变动）
     // 重新读取持久化偏好并对齐原生主题

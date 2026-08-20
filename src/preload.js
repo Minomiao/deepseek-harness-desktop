@@ -12,6 +12,26 @@ contextBridge.exposeInMainWorld('dshDesktop', {
   },
 });
 
+// 设置窗口 API：插件管理 + 其他设置（loading/主页面不使用，无副作用）
+contextBridge.exposeInMainWorld('settingsAPI', {
+  getInfo: () => ipcRenderer.invoke('settings:get-info'),
+  installPlugin: (name) => ipcRenderer.invoke('settings:install-plugin', name),
+  removePlugin: (name) => ipcRenderer.invoke('settings:remove-plugin', name),
+  restartDsh: () => ipcRenderer.invoke('settings:restart-dsh'),
+  setAutoLaunch: (enabled) => ipcRenderer.invoke('settings:set-auto-launch', enabled),
+  openDataDir: () => ipcRenderer.invoke('settings:open-data-dir'),
+  onTheme: (cb) => {
+    const listener = (_event, payload) => cb(payload.theme);
+    ipcRenderer.on('settings:theme', listener);
+    return () => ipcRenderer.removeListener('settings:theme', listener);
+  },
+  onPluginOutput: (cb) => {
+    const listener = (_event, line) => cb(line);
+    ipcRenderer.on('settings:plugin-output', listener);
+    return () => ipcRenderer.removeListener('settings:plugin-output', listener);
+  },
+});
+
 // ---- 主题同步：把页面深/浅色信号转发给主进程，让原生标题栏跟随 ----
 // dsh 前端通过 <html style="color-scheme"> 与 <body data-ds-dark-theme> 标记主题
 function readDark() {
