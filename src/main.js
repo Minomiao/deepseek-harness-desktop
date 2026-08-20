@@ -258,58 +258,67 @@ function createTray() {
   }
 }
 
-app.whenReady().then(() => {
-  // 移除默认菜单栏（Windows/Linux）；macOS 保留以维持复制粘贴等系统快捷键
-  if (process.platform !== 'darwin') Menu.setApplicationMenu(null);
+// 单实例锁：只允许一个实例运行。第二个实例（双击 exe / 再次启动）直接退出，
+// 并通知第一个实例聚焦主窗口，避免多开（多份 dsh 服务 + 多托盘图标 + 争抢 ~/.dsh）。
+const gotTheLock = app.requestSingleInstanceLock();
+if (!gotTheLock) {
+  app.quit();
+} else {
+  app.on('second-instance', () => showMainWindow());
 
-  ipcMain.handle('dsh:state', () => ({ ...state }));
+  app.whenReady().then(() => {
+    // 移除默认菜单栏（Windows/Linux）；macOS 保留以维持复制粘贴等系统快捷键
+    if (process.platform !== 'darwin') Menu.setApplicationMenu(null);
 
-  // 页面上报了主题变化（<html style="color-scheme"> / <body data-ds-dark-theme> 变动）
-  // 重新读取持久化偏好并对齐原生主题
-  ipcMain.on('dsh:theme', () => {
-    logTheme('IPC dsh:theme received');
+    ipcMain.handle('dsh:state', () => ({ ...state }));
+
+    // 页面上报了主题变化（<html style="color-scheme"> / <body data-ds-dark-theme> 变动）
+    // 重新读取持久化偏好并对齐原生主题
+    ipcMain.on('dsh:theme', () => {
+      logTheme('IPC dsh:theme received');
+      applyThemeFromPreference();
+    });
+
+    // 兜底：settings.yaml 本身被写入（UI 切换偏好）时也重新对齐，覆盖 DOM/IPC 的时序差
+    const settingsFile = path.join(DSH_HOME, 'settings.yaml');
+    fs.watchFile(settingsFile, { interval: 500 }, () => {
+      logTheme('settings.yaml changed');
+      applyThemeFromPreference();
+    });
+
+    // “跟随系统”模式下，OS 主题变化（不改 dsh 设置）也同步标题栏覆盖层颜色
+    nativeTheme.on('updated', () => {
+      logTheme('nativeTheme updated');
+      applyThemeFromPreference();
+    });
+
+    // 启动时即按持久化偏好设置原生主题，避免白屏/标题栏闪色
     applyThemeFromPreference();
+    createTray();
+    createWindow();
+    startDsh();
+
+    // macOS 惯例：Dock 点击时恢复/重建窗口
+    app.on('activate', () => {
+      if (BrowserWindow.getAllWindows().length === 0) {
+        stopping = false;
+        dshUrl = null;
+        createWindow();
+        startDsh();
+      } else {
+        showMainWindow();
+      }
+    });
   });
 
-  // 兜底：settings.yaml 本身被写入（UI 切换偏好）时也重新对齐，覆盖 DOM/IPC 的时序差
-  const settingsFile = path.join(DSH_HOME, 'settings.yaml');
-  fs.watchFile(settingsFile, { interval: 500 }, () => {
-    logTheme('settings.yaml changed');
-    applyThemeFromPreference();
+  // 托盘启用时，窗口关闭只是隐藏，应用与 dsh 服务继续在后台运行；
+  // 真正退出走托盘菜单“退出”（before-quit 里停服务）
+  app.on('window-all-closed', () => {
+    if (process.platform !== 'darwin') app.quit();
   });
 
-  // “跟随系统”模式下，OS 主题变化（不改 dsh 设置）也同步标题栏覆盖层颜色
-  nativeTheme.on('updated', () => {
-    logTheme('nativeTheme updated');
-    applyThemeFromPreference();
+  app.on('before-quit', () => {
+    isQuitting = true;
+    stopDsh();
   });
-
-  // 启动时即按持久化偏好设置原生主题，避免白屏/标题栏闪色
-  applyThemeFromPreference();
-  createTray();
-  createWindow();
-  startDsh();
-
-  // macOS 惯例：Dock 点击时恢复/重建窗口
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-      stopping = false;
-      dshUrl = null;
-      createWindow();
-      startDsh();
-    } else {
-      showMainWindow();
-    }
-  });
-});
-
-// 托盘启用时，窗口关闭只是隐藏，应用与 dsh 服务继续在后台运行；
-// 真正退出走托盘菜单“退出”（before-quit 里停服务）
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit();
-});
-
-app.on('before-quit', () => {
-  isQuitting = true;
-  stopDsh();
-});
+}
