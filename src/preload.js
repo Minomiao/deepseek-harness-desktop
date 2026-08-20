@@ -22,6 +22,8 @@ contextBridge.exposeInMainWorld('settingsAPI', {
   openDataDir: () => ipcRenderer.invoke('settings:open-data-dir'),
   checkUpdate: () => ipcRenderer.invoke('settings:check-update'),
   openExternal: (url) => ipcRenderer.invoke('settings:open-external', url),
+  getPluginsDir: () => ipcRenderer.invoke('settings:get-plugins-dir'),
+  setPluginsDir: () => ipcRenderer.invoke('settings:set-plugins-dir'),
   onTheme: (cb) => {
     const listener = (_event, payload) => cb(payload.theme);
     ipcRenderer.on('settings:theme', listener);

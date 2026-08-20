@@ -2,9 +2,8 @@
 
 const api = window.settingsAPI;
 
-const pkgInput = document.getElementById('pkg');
-const btnInstall = document.getElementById('btn-install');
-const btnRemove = document.getElementById('btn-remove');
+const pkgInputs = document.querySelectorAll('.pkg-input');
+const installBtns = document.querySelectorAll('[data-install-target]');
 const btnRestart = document.getElementById('btn-restart');
 const outputEl = document.getElementById('output');
 const statusEl = document.getElementById('status');
@@ -12,6 +11,8 @@ const pluginsEl = document.getElementById('plugins');
 const autoLaunchEl = document.getElementById('autolaunch');
 const dshHomeEl = document.getElementById('dsh-home');
 const btnOpenDir = document.getElementById('btn-open-dir');
+const pluginsDirEl = document.getElementById('plugins-dir');
+const btnChangePluginsDir = document.getElementById('btn-change-plugins-dir');
 
 const sideVersionEl = document.getElementById('side-version');
 const aboutVersionEl = document.getElementById('about-version');
@@ -47,10 +48,9 @@ function applyTheme(theme) {
 
 function setBusy(b) {
   busy = b;
-  btnInstall.disabled = b;
-  btnRemove.disabled = b;
+  pkgInputs.forEach((el) => (el.disabled = b));
+  installBtns.forEach((el) => (el.disabled = b));
   btnRestart.disabled = b;
-  pkgInput.disabled = b;
 }
 
 function showStatus(text, ok) {
@@ -64,12 +64,25 @@ function clearOutput() {
   outputEl.textContent = '';
 }
 
+// 根据依赖 spec 判断插件来源（npm / git 仓库 / 本地目录）
+function sourceOf(spec) {
+  if (/^(link|file):/.test(spec || '')) return '本地';
+  if (/(^git\+|^git:|^ssh:|^github:|^gitlab:|\.git($|#))/i.test(spec || '')) return 'git';
+  return 'npm';
+}
+
+function setPluginsDirText(dir) {
+  pluginsDirEl.textContent = dir || '';
+}
+
 async function loadInfo() {
   const info = await api.getInfo();
   applyTheme(info.theme || 'light');
   if (info.repo) repoUrl = info.repo;
   dshHomeEl.textContent = info.dshHome;
   autoLaunchEl.checked = info.autoLaunch;
+  pluginsDirEl.textContent = info.pluginsDir || '';
+  const deps = info.dependencies || {};
 
   sideVersionEl.textContent = info.version;
   aboutVersionEl.textContent = `v${info.version}`;
@@ -96,7 +109,7 @@ async function loadInfo() {
     const isBuiltin = BUILTIN_BUNDLES.has(name);
     const tag = document.createElement('span');
     tag.className = isBuiltin ? 'tag builtin' : 'tag';
-    tag.textContent = isBuiltin ? '内置' : '插件';
+    tag.textContent = isBuiltin ? '内置' : sourceOf(deps[name]);
     li.appendChild(tag);
 
     if (!isBuiltin) {
@@ -154,23 +167,25 @@ function run(action, args) {
     });
 }
 
-btnInstall.addEventListener('click', () => {
-  const name = pkgInput.value.trim();
-  if (!name) {
-    showStatus('请输入插件包名', false);
-    return;
-  }
-  run('installPlugin', [name]);
+// 每个来源输入条：点「安装」或回车触发安装（内部仍按内容自动识别来源）
+installBtns.forEach((btn) => {
+  btn.addEventListener('click', () => {
+    const input = document.getElementById(btn.dataset.installTarget);
+    const name = input.value.trim();
+    if (!name) {
+      showStatus('请输入要安装的插件信息', false);
+      input.focus();
+      return;
+    }
+    run('installPlugin', [name]);
+  });
 });
-
-btnRemove.addEventListener('click', () => {
-  const name = pkgInput.value.trim();
-  if (!name) {
-    showStatus('请输入要卸载的插件包名', false);
-    return;
-  }
-  if (!confirm(`确定卸载 ${name} 吗？`)) return;
-  run('removePlugin', [name]);
+pkgInputs.forEach((el) => {
+  el.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter') return;
+    const btn = document.querySelector(`[data-install-target="${el.id}"]`);
+    if (btn) btn.click();
+  });
 });
 
 btnRestart.addEventListener('click', () => {
@@ -189,6 +204,11 @@ autoLaunchEl.addEventListener('change', () => {
 
 btnOpenDir.addEventListener('click', () => {
   api.openDataDir();
+});
+
+btnChangePluginsDir.addEventListener('click', async () => {
+  const res = await api.setPluginsDir();
+  if (res && res.ok && !res.canceled) setPluginsDirText(res.dir);
 });
 
 // ---- 关于：检查更新 / 外链 ----
