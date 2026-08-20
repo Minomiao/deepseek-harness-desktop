@@ -61,6 +61,10 @@ function startThemeSync() {
 
 // ---- 标题栏可拖动：WCO 覆盖层区域默认不可拖动窗口，
 //      需按规范在页面顶部注入一条 -webkit-app-region: drag 的条 ----
+//      Chromium 的 no-drag 只对 drag 元素的【后代】生效，兄弟覆盖层无法
+//      挖孔，因此覆盖式拖动条必然盖住其下的按钮。方案：动态压低拖动条
+//      高度——只占条带内小型按钮（如侧边栏收展按钮）顶部以上的区域，
+//      按钮整体留在拖动条下方、完全可点击；拖拽区在每个状态自动取最大。
 function installDragBar() {
   if (document.getElementById('dsh-desktop-dragbar')) return;
 
@@ -69,11 +73,12 @@ function installDragBar() {
     '#dsh-desktop-dragbar {',
     '  position: fixed;',
     '  top: 0;',
-    '  left: env(titlebar-area-x, 0px);',
+    '  left: 0;',
     '  width: env(titlebar-area-width, 100%);',
     '  height: env(titlebar-area-height, 40px);',
     '  -webkit-app-region: drag;',
-    '  z-index: 2147483647;',
+    '  z-index: 2147483646;',
+    '  pointer-events: auto;',
     '}',
   ].join('\n');
   (document.head || document.documentElement).appendChild(style);
@@ -82,6 +87,43 @@ function installDragBar() {
   bar.id = 'dsh-desktop-dragbar';
   bar.setAttribute('aria-hidden', 'true');
   document.body.appendChild(bar);
+
+  const STRIP_HEIGHT = 40; // 与 titlebar-area-height 一致
+  let fitTimer = null;
+
+  // 找到条带内最靠上的“小型”交互元素，拖动条高度取到它顶部为止。
+  function fitHeight() {
+    if (!bar.isConnected) return;
+    let minTop = STRIP_HEIGHT;
+    const candidates = document.querySelectorAll(
+      'button, a, [role="button"], input, textarea, select, [contenteditable="true"], [tabindex]'
+    );
+    for (const el of candidates) {
+      const rect = el.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) continue;
+      // 只在顶部条带内、且是小型图标按钮（收展按钮 28~36px）
+      if (rect.bottom <= 0 || rect.top >= STRIP_HEIGHT) continue;
+      if (rect.width > 64 || rect.height > 64) continue;
+      minTop = Math.min(minTop, rect.top);
+    }
+    bar.style.height = `${Math.max(8, Math.round(minTop))}px`;
+  }
+
+  function scheduleFit() {
+    if (fitTimer) return;
+    fitTimer = setTimeout(() => {
+      fitTimer = null;
+      fitHeight();
+    }, 200);
+  }
+
+  fitHeight();
+  window.addEventListener('resize', scheduleFit);
+  new MutationObserver(scheduleFit).observe(document.body, {
+    childList: true,
+    subtree: true,
+    attributes: true,
+  });
 }
 
 function startUiHelpers() {
