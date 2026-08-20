@@ -14,9 +14,9 @@ DeepSeek Harness 是 DeepSeek 官方的 Agent 开发框架，原版通过命令�
 
 ## 界面预览
 
-浅色模式 | 深色模式
-:---:|:---:
-![浅色模式](assets/light.png) | ![深色模式](assets/dark.png)
+![浅色模式](assets/light.png)
+
+![深色模式](assets/dark.png)
 
 ## 安装
 
