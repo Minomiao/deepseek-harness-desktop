@@ -37,6 +37,16 @@ jobs:
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false" # 跳过代码签名
 
+      - name: Package portable zip (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: bash
+        run: |
+          cd dist
+          VERSION=$(node -p "require('../package.json').version")
+          # 将 win-unpacked 目录（免安装版）压缩为 zip
+          tar -a -c -f "DSH Desktop-$VERSION-win-x64.zip" win-unpacked
+          ls -lh "DSH Desktop-$VERSION-win-x64.zip"
+
       - name: Generate SHA256 checksums
         shell: bash
         run: |
