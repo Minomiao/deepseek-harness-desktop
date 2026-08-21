@@ -37,6 +37,17 @@ jobs:
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false" # 跳过代码签名
 
+      - name: Generate SHA256 checksums
+        shell: bash
+        run: |
+          cd dist
+          # macOS 默认无 sha256sum，回退到 shasum -a 256
+          if command -v sha256sum > /dev/null 2>&1; then HASH=sha256sum; else HASH="shasum -a 256"; fi
+          for f in *.exe *.dmg *.AppImage *.zip; do
+            [ -f "$f" ] && $HASH "$f" > "$f.sha256"
+          done
+          ls -1 *.sha256
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -44,6 +55,6 @@ jobs:
           path: |
             dist/*.${{ matrix.ext }}
             dist/*.zip
-            dist/win-unpacked/DSH Desktop.exe
+            dist/*.sha256
           if-no-files-found: warn
           retention-days: 30
