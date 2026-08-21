@@ -96,25 +96,12 @@ function readThemePreference() {
 //  浅色页面背景：--dsw-static-neutral-bluish-00 = rgb(255,255,255)（纯白）
 //  深色页面背景：--dsw-static-neutral-bluish-950 = rgb(21,21,23) = #151517
 const THEME_COLORS = {
-  light: { overlay: '#ffffff', symbol: '#000000', bg: '#ffffff' },
-  dark: { overlay: '#151517', symbol: '#ffffff', bg: '#151517' },
+  light: { bg: '#ffffff' },
+  dark: { bg: '#151517' },
 };
 
 function currentThemeColors() {
   return nativeTheme.shouldUseDarkColors ? THEME_COLORS.dark : THEME_COLORS.light;
-}
-
-function syncTitleBarOverlay() {
-  // setTitleBarOverlay 仅 Windows/Linux 支持；macOS 交通灯颜色由系统自适应，无需处理
-  if (process.platform !== 'win32' && process.platform !== 'linux') return;
-  if (!mainWindow || mainWindow.isDestroyed()) return;
-  const { overlay, symbol } = currentThemeColors();
-  try {
-    mainWindow.setTitleBarOverlay({ color: overlay, symbolColor: symbol });
-    logTheme(`titleBarOverlay -> ${overlay} / ${symbol}`);
-  } catch (err) {
-    logTheme(`titleBarOverlay failed: ${err.message}`);
-  }
 }
 
 function applyThemeFromPreference() {
@@ -123,8 +110,6 @@ function applyThemeFromPreference() {
   nativeTheme.themeSource = source;
   uiTheme = nativeTheme.shouldUseDarkColors ? 'dark' : 'light';
   logTheme(`applyThemeFromPreference -> preference=${preference}, themeSource=${source}, uiTheme=${uiTheme}, shouldUseDarkColors=${nativeTheme.shouldUseDarkColors}`);
-  // 让标题栏覆盖层颜色跟随页面背景色
-  syncTitleBarOverlay();
   // 让设置窗口配色跟随主题
   syncSettingsTheme();
 }
@@ -187,9 +172,73 @@ function ensureDirectoryPickerFix() {
   logTheme('directory-picker: Windows 目录选择崩溃修复已注入（auto 后端禁用，改用 browse）');
 }
 
+/**
+ * 内置 header 布局插件自动注入（与目录选择补丁同模式）：
+ * 1) 把 plugins/dsh-header-layout 放置到 node_modules，供 dsh 的 installAnchor
+ *    （@deepseek-ai/dsh 包）向上解析到同级 @deepseek-ai 包；
+ * 2) 幂等把包名加入 web profile 的 dsh.profile.bundles。
+ * 插件遮蔽默认会话 header，为顶部窗口拖动区留白。
+ */
+function ensureHeaderLayoutPlugin() {
+  const PLUGIN_NAME = '@deepseek-ai/dsh-desktop-header-layout';
+  const srcDir = path.join(__dirname, '..', 'plugins', 'dsh-header-layout');
+  if (!fs.existsSync(path.join(srcDir, 'package.json'))) return; // 未随应用分发时跳过
+  // 1) 放置到 node_modules（每次启动覆盖同步，随应用版本更新插件）
+  //    注意 PLUGIN_NAME 已含 scope，不能再用 '@deepseek-ai' 拼接，否则路径重复。
+  const destDir = path.join(__dirname, '..', 'node_modules', PLUGIN_NAME);
+  try {
+    fs.cpSync(srcDir, destDir, { recursive: true });
+    logTheme(`header-layout: 插件已同步到 ${destDir}`);
+  } catch (err) {
+    logTheme(`header-layout: 插件放置失败: ${err.message}`);
+  }
+  // 2) 放置到 profile 的模块回退目录：cordis 的 loader entry 是从 profile
+  //    目录向上 import 包的（其他 bundle 靠 heal 在此建立的 symlink 加载），
+  //    内置插件不在 dsh 依赖树里，需显式复制过去才能被 import 到。
+  const fallbackDir = path.join(DSH_HOME, 'profiles', 'node_modules', PLUGIN_NAME);
+  try {
+    fs.cpSync(srcDir, fallbackDir, { recursive: true });
+    logTheme(`header-layout: 插件已同步到 profile 模块回退目录`);
+  } catch (err) {
+    logTheme(`header-layout: profile 模块回退目录放置失败: ${err.message}`);
+  }
+  // 3) 幂等写入 profile bundles（bundle 顺序在 dsh-web-app 之后，patch 层覆盖）
+  const profilePkgPath = path.join(DSH_HOME, 'profiles', 'web', 'package.json');
+  try {
+    const m = JSON.parse(fs.readFileSync(profilePkgPath, 'utf8'));
+    const bundles = m.dsh?.profile?.bundles;
+    if (Array.isArray(bundles) && !bundles.includes(PLUGIN_NAME)) {
+      m.dsh.profile.bundles = [...bundles, PLUGIN_NAME];
+      fs.writeFileSync(profilePkgPath, JSON.stringify(m, null, 2) + '\n');
+      logTheme('header-layout: 已加入 profile bundles');
+    }
+  } catch {
+    /* profile 未初始化或无法解析：dsh 首次启动会重建模板，下次启动再注入 */
+  }
+}
+
+/** 移除 header 布局插件：不再遮蔽默认 header（布局零改动），
+ *  导出按钮改由壳层 CSS 隐藏（见 preload.js）。幂等：bundles 里没有就直接跳过。 */
+function removeHeaderLayoutPlugin() {
+  const PLUGIN_NAME = '@deepseek-ai/dsh-desktop-header-layout';
+  const profilePkgPath = path.join(DSH_HOME, 'profiles', 'web', 'package.json');
+  try {
+    const m = JSON.parse(fs.readFileSync(profilePkgPath, 'utf8'));
+    const bundles = m.dsh?.profile?.bundles;
+    if (Array.isArray(bundles) && bundles.includes(PLUGIN_NAME)) {
+      m.dsh.profile.bundles = bundles.filter((b) => b !== PLUGIN_NAME);
+      fs.writeFileSync(profilePkgPath, JSON.stringify(m, null, 2) + '\n');
+      logTheme('header-layout: 已从 profile bundles 移除（不再遮蔽默认 header）');
+    }
+  } catch {
+    /* profile 未初始化或无法解析：dsh 首次启动会重建模板 */
+  }
+}
+
 /** 启动 dsh web 子进程。 */
 function startDsh() {
   ensureDirectoryPickerFix();
+  removeHeaderLayoutPlugin();
   updateState({ status: 'starting', url: null, error: null });
 
   const child = spawn(process.execPath, [DSH_BIN, 'web', '--port', '0'], {
@@ -233,10 +282,10 @@ function startDsh() {
 }
 
 function createWindow() {
-  // 此时 applyThemeFromPreference() 已设置 nativeTheme，据此选窗口底色与标题栏颜色
-  const { overlay, symbol, bg } = currentThemeColors();
-  // Windows/Linux：隐藏原生标题栏，用覆盖层绘制与页面同色的标题栏条（保留系统窗口按钮）。
-  // Linux 上仅在桌面环境支持客户端装饰（CSD，如 GNOME 默认）时生效，其余 WM 会退回系统标题栏。
+  // 此时 applyThemeFromPreference() 已设置 nativeTheme，据此选窗口底色
+  const { bg } = currentThemeColors();
+  // Windows/Linux：隐藏原生标题栏但保留右上角系统按钮（titleBarOverlay 浮动层，
+  // 约 138px 宽、40px 高）。Linux 上仅在桌面环境支持客户端装饰（CSD）时生效。
   const useOverlay = process.platform === 'win32' || process.platform === 'linux';
 
   mainWindow = new BrowserWindow({
@@ -248,11 +297,14 @@ function createWindow() {
     icon: path.join(__dirname, '..', 'build', 'icon.ico'),
     backgroundColor: bg,
     autoHideMenuBar: true,
-    // 隐藏原生标题栏，用覆盖层绘制与页面同色的标题栏条（保留系统窗口按钮）
     ...(useOverlay
       ? {
           titleBarStyle: 'hidden',
-          titleBarOverlay: { color: overlay, symbolColor: symbol, height: 40 },
+          titleBarOverlay: {
+            color: bg,
+            symbolColor: nativeTheme.shouldUseDarkColors ? '#ffffff' : '#000000',
+            height: 40,
+          },
         }
       : {}),
     webPreferences: {

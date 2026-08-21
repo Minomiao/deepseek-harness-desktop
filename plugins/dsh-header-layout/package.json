@@ -1,0 +1,34 @@
+{
+  "name": "@deepseek-ai/dsh-desktop-header-layout",
+  "version": "0.1.0",
+  "description": "DSH Desktop 内置：重排会话 header，面包屑独占首行，工具按钮移至 Chat/Trajectory 导航行",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": {
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "default": "./lib/client.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-slots"
+      ],
+      "platform": "web"
+    }
+  },
+  "files": [
+    "lib/**/*",
+    "cordis.patch.yml"
+  ]
+}

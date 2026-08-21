@@ -42,6 +42,7 @@
       "src/**/*",
       "build/icon.ico",
       "build/icon.png",
+      "plugins/**/*",
       "package.json"
     ],
     "asar": false,

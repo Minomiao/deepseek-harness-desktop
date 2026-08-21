@@ -1,0 +1,6 @@
+# DSH Desktop 内置 header 布局插件：在 browser roster 中注册一行 client 插件。
+# 该插件遮蔽默认的会话 header（single slot），把 actions/utilities 从首行右端
+# 移到 Chat/Trajectory 导航行，面包屑独占首行——为顶部窗口拖动区留白。
+- insert:
+    - id: ui-desktop-header-layout
+      name: '@deepseek-ai/dsh-desktop-header-layout'
