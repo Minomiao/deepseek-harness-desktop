@@ -325,12 +325,47 @@ function removeHeaderLayoutPlugin() {
   }
 }
 
+/**
+ * 内置对话导航点插件注入（同 header-layout 的三步模式，已停用）：
+ * plugins/dsh-chat-navdots 在对话右侧注入竖排导航点（悬停预览、点击跳转）。
+ */
+function ensureChatNavdotsPlugin() {
+  const PLUGIN_NAME = '@deepseek-ai/dsh-desktop-chat-navdots';
+  const srcDir = path.join(__dirname, '..', 'plugins', 'dsh-chat-navdots');
+  if (!fs.existsSync(path.join(srcDir, 'package.json'))) return; // 未随应用分发时跳过
+  // 1) 放置到应用 node_modules（dsh 安装目录解析）
+  const destDir = path.join(__dirname, '..', 'node_modules', PLUGIN_NAME);
+  // 2) 放置到 profile 模块回退目录（cordis loader entry 从 profile 向上 import）
+  const fallbackDir = path.join(DSH_HOME, 'profiles', 'node_modules', PLUGIN_NAME);
+  for (const dir of [destDir, fallbackDir]) {
+    try {
+      fs.cpSync(srcDir, dir, { recursive: true });
+    } catch (err) {
+      logTheme(`chat-navdots: 插件放置失败 (${dir}): ${err.message}`);
+    }
+  }
+  // 3) 幂等写入 profile bundles
+  const profilePkgPath = path.join(DSH_HOME, 'profiles', 'web', 'package.json');
+  try {
+    const m = JSON.parse(fs.readFileSync(profilePkgPath, 'utf8'));
+    const bundles = m.dsh?.profile?.bundles;
+    if (Array.isArray(bundles) && !bundles.includes(PLUGIN_NAME)) {
+      m.dsh.profile.bundles = [...bundles, PLUGIN_NAME];
+      fs.writeFileSync(profilePkgPath, JSON.stringify(m, null, 2) + '\n');
+      logTheme('chat-navdots: 已加入 profile bundles');
+    }
+  } catch {
+    /* profile 未初始化或无法解析：下次启动再注入 */
+  }
+}
+
 /** 启动 dsh web 子进程。 */
 function startDsh() {
   ensureDirectoryPickerFix();
   ensureWindowsHideFix();
   ensureSandboxConsoleFix();
   removeHeaderLayoutPlugin();
+  ensureChatNavdotsPlugin();
   updateState({ status: 'starting', url: null, error: null });
 
   const child = spawn(process.execPath, [DSH_BIN, 'web', '--port', '0'], {
