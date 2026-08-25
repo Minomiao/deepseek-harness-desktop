@@ -173,6 +173,96 @@ function ensureDirectoryPickerFix() {
 }
 
 /**
+ * Windows 隐藏 dsh 子进程控制台窗口（与目录选择补丁同模式）：
+ * dsh 的 subprocess-local 在 spawn bash 命令与 taskkill 终止进程树时均未传
+ * windowsHide，无控制台的父进程（本 GUI 应用）创建控制台子系统子进程时
+ * Windows 会为其新建黑色 CMD 窗口——AI 每执行一条命令就闪一次。
+ * 启动前对安装产物 lib/index.js 做幂等字符串补丁（已含 windowsHide 则跳过），
+ * dsh 依赖升级后文件更新会自动重新匹配注入。
+ */
+function ensureWindowsHideFix() {
+  if (process.platform !== 'win32') return;
+  const libPath = path.join(
+    __dirname, '..', 'node_modules', '@deepseek-ai', 'dsh-subprocess-local', 'lib', 'index.js',
+  );
+  let text;
+  try {
+    text = fs.readFileSync(libPath, 'utf8');
+  } catch {
+    return; // 依赖不存在（结构变化）时跳过
+  }
+  if (text.includes('windowsHide')) return; // 已处理过
+  let patched = text.replace(
+    /\], \{ stdio: "ignore" \}\);/,
+    '], { stdio: "ignore", windowsHide: true });',
+  );
+  patched = patched.replace(
+    /detached: platform !== "win32"\n\t\}\);/,
+    'detached: platform !== "win32",\n\t\twindowsHide: true\n\t});',
+  );
+  if (patched !== text) {
+    fs.writeFileSync(libPath, patched);
+    logTheme('windows-hide: dsh 子进程控制台窗口补丁已注入（AI 执行命令不再闪黑窗）');
+  }
+}
+
+/**
+ * Windows 隐藏 dsh 沙箱子进程控制台窗口（黑窗的真正来源）：
+ * AI 命令默认跑在 workspace-write 沙箱，经 windows-acl runner 用 koffi
+ * CreateProcessAsUserW 直接创建实际命令进程，两个 spawn 点均未做控制台隔离
+ * （上游注释称 CREATE_NO_WINDOW 的无头控制台在受限令牌下会 0xC0000142）。
+ * 本 GUI 宿主（electron.exe，GUI 子系统）无控制台可共享，Windows 为每条命令
+ * 新建可见控制台 → 黑窗。
+ * 补丁方案：显式 CREATE_NEW_CONSOLE（控制台照常创建，行为与现状一致）+
+ * STARTF_USESHOWWINDOW/SW_HIDE（创建时隐藏窗口）。与 CREATE_NO_WINDOW 的
+ * 无头控制台机制不同，不触发上游注释所述的崩溃。
+ */
+function ensureSandboxConsoleFix() {
+  if (process.platform !== 'win32') return;
+  const libDir = path.join(
+    __dirname, '..', 'node_modules', '@deepseek-ai', 'dsh-sandbox-windows-acl', 'lib',
+  );
+  let typeFile;
+  try {
+    typeFile = fs.readdirSync(libDir).find((f) => /^types-.*\.js$/.test(f));
+  } catch {
+    return; // 依赖不存在（结构变化）时跳过
+  }
+  if (!typeFile) return;
+  const libPath = path.join(libDir, typeFile);
+  let text;
+  try {
+    text = fs.readFileSync(libPath, 'utf8');
+  } catch {
+    return;
+  }
+  if (text.includes('wShowWindow: 0')) return; // 已处理过（结构体定义含 wShowWindow 字段名，须匹配赋值形式）
+  let patched = text;
+  // spawnSandboxed（管道 stdio）：flags 0 → CREATE_NEW_CONSOLE
+  patched = patched.replace(
+    /dwFlags: 256,\n(\t*)hStdInput: stdIn\.read,/,
+    'dwFlags: 257,\n$1wShowWindow: 0,\n$1hStdInput: stdIn.read,',
+  );
+  patched = patched.replace(
+    /, 1, 0, null, options\.cwd,/,
+    ', 1, 16, null, options.cwd,',
+  );
+  // spawnSandboxedInherited（继承 stdio，runner 路径）：flags 4 → CREATE_SUSPENDED|CREATE_NEW_CONSOLE
+  patched = patched.replace(
+    /dwFlags: 256,\n(\t*)hStdInput: stdIn,/,
+    'dwFlags: 257,\n$1wShowWindow: 0,\n$1hStdInput: stdIn,',
+  );
+  patched = patched.replace(
+    /, 1, 4, null, options\.cwd,/,
+    ', 1, 20, null, options.cwd,',
+  );
+  if (patched !== text) {
+    fs.writeFileSync(libPath, patched);
+    logTheme('sandbox-console: dsh 沙箱命令控制台窗口补丁已注入（隐藏沙箱命令黑窗）');
+  }
+}
+
+/**
  * 内置 header 布局插件自动注入（与目录选择补丁同模式）：
  * 1) 把 plugins/dsh-header-layout 放置到 node_modules，供 dsh 的 installAnchor
  *    （@deepseek-ai/dsh 包）向上解析到同级 @deepseek-ai 包；
@@ -238,6 +328,8 @@ function removeHeaderLayoutPlugin() {
 /** 启动 dsh web 子进程。 */
 function startDsh() {
   ensureDirectoryPickerFix();
+  ensureWindowsHideFix();
+  ensureSandboxConsoleFix();
   removeHeaderLayoutPlugin();
   updateState({ status: 'starting', url: null, error: null });
 
