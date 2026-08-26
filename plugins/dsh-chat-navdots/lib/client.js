@@ -17,7 +17,7 @@ window.__ModuleLoader__.load({
       ".dshndDot:hover { opacity: 1; transform: scale(1.6); background: var(--dsw-alias-state-business-primary, #4d6bfe); }",
       ".dshndDotActive { opacity: 1; background: var(--dsw-alias-state-business-primary, #4d6bfe); transform: scale(1.5); }",
       // 气泡挂 body 级（fixed），脱离 rail 裁剪上下文；单行内容预览（无序号/类型行）
-      ".dshndTip { position: fixed; z-index: 60; width: 140px; max-width: 40vw; padding: 4px 7px; border-radius: 6px; background: var(--dsw-alias-container-raised, #ffffff); color: var(--dsw-alias-label-primary, #1f2329); border: 1px solid var(--dsw-alias-divider-border, rgba(0,0,0,.1)); box-shadow: 0 2px 8px rgba(0,0,0,.1); font-size: 8px; line-height: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; pointer-events: none; display: none; }",
+      ".dshndTip { position: fixed; z-index: 60; width: 168px; max-width: 45vw; padding: 5px 9px; border-radius: 8px; background: var(--dsw-alias-container-raised, #ffffff); color: var(--dsw-alias-label-primary, #1f2329); border: 1px solid var(--dsw-alias-divider-border, rgba(0,0,0,.1)); box-shadow: 0 2px 10px rgba(0,0,0,.12); font-size: 10px; line-height: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; pointer-events: none; display: none; }",
     ].join("\n");
     const CSS_ID = "@deepseek-ai/dsh-desktop-chat-navdots/rail.css";
 
@@ -40,7 +40,7 @@ window.__ModuleLoader__.load({
         if (kind !== "user" && kind !== "steering") continue;
         const bubble = row.querySelector('[class$="_userRow"]');
         if (!bubble) continue; // 行存在但没有用户气泡（如空消息/未渲染）→ 跳过
-        rows.push({ el: row, kind, key: row.dataset.chatAnchorKey });
+        rows.push({ el: row, kind, key: row.dataset.chatAnchorKey, bubble });
       }
       return rows;
     }
@@ -50,9 +50,14 @@ window.__ModuleLoader__.load({
       return rows.map((r) => `${r.key}:${r.kind}`).join("|");
     }
 
+    // 常见日期/时间形态：2026/8/26、2026-08-26、14:05、14:05:30、上午/下午 2:30 等
+    const DATETIME_RE = /(\d{1,4}[/年.\-]\d{1,2}([/月.\-]\d{1,4})?|\d{1,2}:\d{2}(:\d{2})?|[上下]午\s*\d{1,2}:\d{2}|[A-Z][a-z]{2}\s+\d{1,2}(,?\s+\d{4})?)/g;
+
+    /** 预览文本：只取用户气泡内容，并剥离日期/时间片段。 */
     function previewText(row) {
-      const text = (row.innerText || "").replace(/\s+/g, " ").trim();
-      return text.length > 60 ? text.slice(0, 60) + "…" : (text || "（空消息）");
+      const source = row.bubble || row;
+      const text = (source.innerText || "").replace(DATETIME_RE, " ").replace(/\s+/g, " ").trim();
+      return text.length > 80 ? text.slice(0, 80) + "…" : (text || "（空消息）");
     }
 
     const state = {
@@ -143,7 +148,7 @@ window.__ModuleLoader__.load({
         dot.type = "button";
         dot.className = "dshndDot";
         dot.dataset.rowIdx = String(i);
-        bindTip(dot, el);
+        bindTip(dot, rows[i]);
         dot.addEventListener("click", () => {
           el.scrollIntoView({ behavior: "smooth", block: "start" });
         });
