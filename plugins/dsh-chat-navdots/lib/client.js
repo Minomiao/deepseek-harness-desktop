@@ -1,6 +1,7 @@
 // Browser half bundle（client-modules 契约）：执行时只注册 factory，
 // 模块体副作用在 materialization 时运行。格式对齐 dsh-client-ui-jobs 产物。
 // 纯 DOM 实现（无 React）：监听对话滚动容器与消息行，注入右侧导航点 rail。
+// 只显示用户消息（user/steering）；最多 10 个点，超出后 rail 可滚轮滚动。
 window.__ModuleLoader__.load({
   id: "@deepseek-ai/dsh-desktop-chat-navdots",
   factory: (require) => {
@@ -9,21 +10,18 @@ window.__ModuleLoader__.load({
     Object.defineProperty(exports, Symbol.toStringTag, { value: "Module" });
 
     const CSS = [
-      ".dshndRail { position: fixed; right: 6px; top: 50%; transform: translateY(-50%); z-index: 40; display: flex; flex-direction: column; gap: 9px; padding: 6px 3px; border-radius: 10px; max-height: 70vh; overflow: hidden; justify-content: center; }",
-      ".dshndRail:hover { overflow: visible; }",
-      ".dshndDot { position: relative; width: 5px; height: 5px; border-radius: 50%; border: none; padding: 0; background: var(--dsw-alias-label-tertiary, #9aa0a6); opacity: 0.45; cursor: pointer; transition: opacity .15s, transform .15s, background .15s; }",
+      // rail：默认隐藏溢出；悬停时才允许纵向滚动（此时横向不裁剪，气泡可伸出）
+      ".dshndRail { position: fixed; right: 6px; top: 50%; transform: translateY(-50%); z-index: 40; display: flex; flex-direction: column; gap: 9px; padding: 6px 3px; border-radius: 10px; overflow: hidden; scrollbar-width: none; max-height: 70vh; justify-content: flex-start; overscroll-behavior: contain; }",
+      ".dshndRail::-webkit-scrollbar { display: none; }",
+      ".dshndDot { position: relative; width: 5px; height: 5px; flex: 0 0 auto; border-radius: 50%; border: none; padding: 0; background: var(--dsw-alias-label-tertiary, #9aa0a6); opacity: 0.45; cursor: pointer; transition: opacity .15s, transform .15s, background .15s; }",
       ".dshndDot:hover { opacity: 1; transform: scale(1.6); background: var(--dsw-alias-state-business-primary, #4d6bfe); }",
       ".dshndDotActive { opacity: 1; background: var(--dsw-alias-state-business-primary, #4d6bfe); transform: scale(1.5); }",
-      ".dshndTip { position: absolute; right: 12px; top: 50%; transform: translateY(-50%); width: 120px; max-width: 40vw; padding: 3px 6px; border-radius: 5px; background: var(--dsw-alias-container-raised, #ffffff); color: var(--dsw-alias-label-primary, #1f2329); border: 1px solid var(--dsw-alias-divider-border, rgba(0,0,0,.1)); box-shadow: 0 2px 8px rgba(0,0,0,.1); font-size: 7px; line-height: 9px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; pointer-events: none; display: none; }",
-      ".dshndDot:hover .dshndTip, .dshndDot:focus-visible .dshndTip { display: block; }",
-      ".dshndTipKind { display: block; font-size: 8px; color: var(--dsw-alias-label-tertiary, #9aa0a6); margin-bottom: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }",
+      // 气泡挂 body 级（fixed），脱离 rail 裁剪上下文；单行内容预览（无序号/类型行）
+      ".dshndTip { position: fixed; z-index: 60; width: 140px; max-width: 40vw; padding: 4px 7px; border-radius: 6px; background: var(--dsw-alias-container-raised, #ffffff); color: var(--dsw-alias-label-primary, #1f2329); border: 1px solid var(--dsw-alias-divider-border, rgba(0,0,0,.1)); box-shadow: 0 2px 8px rgba(0,0,0,.1); font-size: 8px; line-height: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; pointer-events: none; display: none; }",
     ].join("\n");
     const CSS_ID = "@deepseek-ai/dsh-desktop-chat-navdots/rail.css";
 
     // ---- 工具 ----
-    const KIND_LABEL = { user: "你", steering: "转向", context: "上下文", "assistant-step": "助手", command: "命令" };
-    const KINDS = new Set(["user", "steering", "context", "assistant-step", "command"]);
-    const MAX_DOTS = 24;
 
     function findScrollport() {
       // ui-conversation 的滚动容器带 data-conversation-scroll（ConversationRoot scrollBody）。
@@ -33,11 +31,16 @@ window.__ModuleLoader__.load({
       return byClass ?? null;
     }
 
+    /** 收集用户消息行：`[class$="_userRow"]` 是 UserStyleBubble 的稳定 CSS Modules 后缀。
+     *  必须有可见内容（排除空行/隐形节点），归属到最近的 chat 行（data-chat-anchor-key）。 */
     function collectRows(scrollport) {
       const rows = [];
       for (const row of scrollport.querySelectorAll("[data-chat-anchor-key]")) {
         const kind = row.dataset.chatFlowKind;
-        if (kind && KINDS.has(kind)) rows.push({ el: row, kind, key: row.dataset.chatAnchorKey });
+        if (kind !== "user" && kind !== "steering") continue;
+        const bubble = row.querySelector('[class$="_userRow"]');
+        if (!bubble) continue; // 行存在但没有用户气泡（如空消息/未渲染）→ 跳过
+        rows.push({ el: row, kind, key: row.dataset.chatAnchorKey });
       }
       return rows;
     }
@@ -54,6 +57,7 @@ window.__ModuleLoader__.load({
 
     const state = {
       rail: null,
+      tip: null,
       port: null,
       rows: [],
       sig: "",
@@ -68,7 +72,7 @@ window.__ModuleLoader__.load({
       if (!port || rows.length === 0) return -1;
       const portRect = port.getBoundingClientRect();
       const center = portRect.top + portRect.height / 2;
-      let best = 0;
+      let best = -1;
       let bestDist = Infinity;
       for (let i = 0; i < rows.length; i++) {
         const r = rows[i].el.getBoundingClientRect();
@@ -79,43 +83,67 @@ window.__ModuleLoader__.load({
       return best;
     }
 
+    /** 把当前激活消息对应的点滚进 rail 可视区（点数超出 rail 高度时）。 */
+    function scrollActiveIntoView() {
+      const { rail } = state;
+      if (!rail || rail.scrollHeight <= rail.clientHeight) return;
+      const active = rail.querySelector(".dshndDotActive");
+      if (active) active.scrollIntoView({ block: "nearest" });
+    }
+
     function markActive() {
       state.rafId = 0;
       const { rail, rows } = state;
       if (!rail) return;
       const idx = activeIdx();
-      const stride = Math.ceil(rows.length / MAX_DOTS);
       for (const dot of rail.children) {
         const i = Number(dot.dataset.rowIdx);
-        const last = i + stride >= rows.length;
-        dot.classList.toggle("dshndDotActive", i === idx || (last && idx >= i));
+        dot.classList.toggle("dshndDotActive", i === idx);
       }
+      scrollActiveIntoView();
+    }
+
+    /** 悬停显示气泡：气泡是 body 级 fixed 元素，定位到点左侧。只显示消息内容单行。 */
+    function bindTip(dot, row) {
+      const show = () => {
+        if (!state.tip) {
+          state.tip = document.createElement("div");
+          state.tip.className = "dshndTip";
+          state.tip.dataset.dshnd = "";
+          document.body.appendChild(state.tip);
+        }
+        const tip = state.tip;
+        const body = document.createElement("span");
+        body.textContent = previewText(row);
+        state.selfMutating = true;
+        try { tip.replaceChildren(body); } finally { state.selfMutating = false; }
+        const rect = dot.getBoundingClientRect();
+        tip.style.right = `${Math.max(4, window.innerWidth - rect.left + 8)}px`;
+        tip.style.display = "block";
+        // 先显示再量高度，保证气泡纵向精确居中于圆点
+        tip.style.top = `${Math.max(4, rect.top + rect.height / 2 - tip.offsetHeight / 2)}px`;
+      };
+      const hide = () => { if (state.tip) state.tip.style.display = "none"; };
+      dot.addEventListener("mouseenter", show);
+      dot.addEventListener("mouseleave", hide);
+      dot.addEventListener("focus", show);
+      dot.addEventListener("blur", hide);
     }
 
     function render() {
       const { rows, rail } = state;
       if (!rail) return;
-      if (rows.length < 2) { rail.style.display = "none"; return; }
+      if (rows.length < 1) { rail.style.display = "none"; return; }
       rail.style.display = "";
 
-      // 超过 MAX_DOTS 个点时抽稀，保持 rail 简洁
-      const stride = Math.ceil(rows.length / MAX_DOTS);
       const frag = document.createDocumentFragment();
-      for (let i = 0; i < rows.length; i += stride) {
-        const { el, kind } = rows[i];
+      for (let i = 0; i < rows.length; i++) {
+        const { el } = rows[i];
         const dot = document.createElement("button");
         dot.type = "button";
         dot.className = "dshndDot";
         dot.dataset.rowIdx = String(i);
-        const tip = document.createElement("span");
-        tip.className = "dshndTip";
-        const kindLabel = document.createElement("span");
-        kindLabel.className = "dshndTipKind";
-        kindLabel.textContent = `#${i + 1} · ${KIND_LABEL[kind] ?? kind}`;
-        const body = document.createElement("span");
-        body.textContent = previewText(el);
-        tip.append(kindLabel, body);
-        dot.appendChild(tip);
+        bindTip(dot, el);
         dot.addEventListener("click", () => {
           el.scrollIntoView({ behavior: "smooth", block: "start" });
         });
@@ -182,8 +210,8 @@ window.__ModuleLoader__.load({
       // SPA：会话切换/消息增删都反映为 DOM 变化；body 兜底观察（可能晚于 apply，等 body 就绪）
       const start = () => {
         const mo = new MutationObserver((muts) => {
-          // 全部由自身 rail 引起才跳过；混有其他变化（如流式输出）则照常调度
-          if (muts.every((m) => m.target.closest?.(".dshndRail") || (m.target.dataset?.dshnd !== undefined && m.target === state.rail))) return;
+          // 自身 rail/气泡的更新：忽略
+          if (muts.every((m) => m.target.closest?.(".dshndRail") || m.target.closest?.(".dshndTip") || (m.target.dataset?.dshnd !== undefined))) return;
           scheduleSync();
         });
         mo.observe(document.body, { childList: true, subtree: true });
