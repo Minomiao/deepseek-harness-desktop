@@ -62,8 +62,9 @@ function updateState(patch) {
   }
 }
 
-// ---- 主题同步：读取 dsh 持久化的主题偏好（~/.dsh/settings.yaml 的 ui-theme.preference），
-//      把 Electron 原生主题（标题栏/菜单栏）对齐到它。
+// ---- 主题同步：读取 dsh 持久化的主题偏好（0.1.5+ 存在 profile 补丁层的
+//      ui-theme 项；更早的版本在 ~/.dsh/settings.yaml），把 Electron 原生主题
+//      （标题栏/菜单栏）对齐到它。
 //      关键：preference 为 "system" 时必须保持 nativeTheme.themeSource = 'system'，
 //      否则会反过来影响页面内 prefers-color-scheme，锁死 dsh 的"跟随系统"。 ----
 const DSH_HOME = process.env.DSH_HOME || path.join(os.homedir(), '.dsh');
@@ -77,17 +78,35 @@ function logTheme(msg) {
   }
 }
 
+/** 从一段 YAML 里取 `ui-theme` 项的 preference 值；取不到返回 null。 */
+function pickThemePreference(text, blockRe) {
+  const block = blockRe.exec(text);
+  if (!block) return null;
+  const pref = /^[ \t]+preference:[ \t]*['"]?(\w+)['"]?[ \t]*(?:\r?\n|$)/m.exec(block[1]);
+  return pref ? pref[1] : null;
+}
+
 function readThemePreference() {
+  // 现行位置：profile 补丁层里的独立列表项
+  //   - id: ui-theme
+  //     name: "@deepseek-ai/dsh-client-ui-theme"
+  //     config:
+  //       preference: system
+  try {
+    const text = fs.readFileSync(path.join(DSH_HOME, 'profiles', 'web', 'cordis.patch.yml'), 'utf8');
+    // 截到下一个列表项为止，避免把后续插件的配置误读成本项的
+    const pref = pickThemePreference(text, /^[ \t]*-[ \t]*id:[ \t]*ui-theme[ \t]*\r?\n((?:[ \t]+.*(?:\r?\n|$))*)/m);
+    if (pref) return pref;
+  } catch {
+    /* profile 尚未初始化 */
+  }
+  // 回退：升级后 dsh 首次启动才会迁移旧设置，迁移前仍读 settings.yaml
   try {
     const text = fs.readFileSync(path.join(DSH_HOME, 'settings.yaml'), 'utf8');
-    // 提取 ui-theme 块（其后所有缩进行），再取 preference 值
-    const block = /^\s*ui-theme:\s*\r?\n((?:[ \t]+.*(?:\r?\n|$))*)/m.exec(text);
-    if (block) {
-      const pref = /^\s+preference:\s*['"]?(\w+)['"]?\s*(?:\r?\n|$)/m.exec(block[1]);
-      if (pref) return pref[1];
-    }
+    const pref = pickThemePreference(text, /^\s*ui-theme:\s*\r?\n((?:[ \t]+.*(?:\r?\n|$))*)/m);
+    if (pref) return pref;
   } catch {
-    /* 文件不存在或读取失败：按 system 处理 */
+    /* 文件不存在或读取失败 */
   }
   return 'system';
 }
@@ -173,202 +192,37 @@ function ensureDirectoryPickerFix() {
 }
 
 /**
- * Windows 隐藏 dsh 子进程控制台窗口（与目录选择补丁同模式）：
- * dsh 的 subprocess-local 在 spawn bash 命令与 taskkill 终止进程树时均未传
- * windowsHide，无控制台的父进程（本 GUI 应用）创建控制台子系统子进程时
- * Windows 会为其新建黑色 CMD 窗口——AI 每执行一条命令就闪一次。
- * 启动前对安装产物 lib/index.js 做幂等字符串补丁（已含 windowsHide 则跳过），
- * dsh 依赖升级后文件更新会自动重新匹配注入。
+ * 清理已退役的内置插件（幂等）：
+ *  - dsh-desktop-header-layout：不再遮蔽默认 header（顶部拖动条由 preload.js 注入）。
+ *  - dsh-desktop-chat-navdots：dsh 0.1.7 起内置 TurnNavigator 回合导航轨道
+ *    （覆盖全部回合、含未加载分页、带 prompt/response 预览），本壳插件已冗余。
+ * 从 web profile 的 bundles/dependencies 摘掉，并删掉历史留下的插件副本，
+ * 避免 dsh 加载不到包时在插件管理页报错。
  */
-function ensureWindowsHideFix() {
-  if (process.platform !== 'win32') return;
-  const libPath = path.join(
-    __dirname, '..', 'node_modules', '@deepseek-ai', 'dsh-subprocess-local', 'lib', 'index.js',
-  );
-  let text;
-  try {
-    text = fs.readFileSync(libPath, 'utf8');
-  } catch {
-    return; // 依赖不存在（结构变化）时跳过
-  }
-  if (text.includes('windowsHide')) return; // 已处理过
-  let patched = text.replace(
-    /\], \{ stdio: "ignore" \}\);/,
-    '], { stdio: "ignore", windowsHide: true });',
-  );
-  patched = patched.replace(
-    /detached: platform !== "win32"\n\t\}\);/,
-    'detached: platform !== "win32",\n\t\twindowsHide: true\n\t});',
-  );
-  if (patched !== text) {
-    fs.writeFileSync(libPath, patched);
-    logTheme('windows-hide: dsh 子进程控制台窗口补丁已注入（AI 执行命令不再闪黑窗）');
-  }
-}
-
-/**
- * Windows 隐藏 dsh 沙箱子进程控制台窗口（黑窗的真正来源）：
- * AI 命令默认跑在 workspace-write 沙箱，经 windows-acl runner 用 koffi
- * CreateProcessAsUserW 直接创建实际命令进程，两个 spawn 点均未做控制台隔离
- * （上游注释称 CREATE_NO_WINDOW 的无头控制台在受限令牌下会 0xC0000142）。
- * 本 GUI 宿主（electron.exe，GUI 子系统）无控制台可共享，Windows 为每条命令
- * 新建可见控制台 → 黑窗。
- * 补丁方案：显式 CREATE_NEW_CONSOLE（控制台照常创建，行为与现状一致）+
- * STARTF_USESHOWWINDOW/SW_HIDE（创建时隐藏窗口）。与 CREATE_NO_WINDOW 的
- * 无头控制台机制不同，不触发上游注释所述的崩溃。
- */
-function ensureSandboxConsoleFix() {
-  if (process.platform !== 'win32') return;
-  const libDir = path.join(
-    __dirname, '..', 'node_modules', '@deepseek-ai', 'dsh-sandbox-windows-acl', 'lib',
-  );
-  let typeFile;
-  try {
-    typeFile = fs.readdirSync(libDir).find((f) => /^types-.*\.js$/.test(f));
-  } catch {
-    return; // 依赖不存在（结构变化）时跳过
-  }
-  if (!typeFile) return;
-  const libPath = path.join(libDir, typeFile);
-  let text;
-  try {
-    text = fs.readFileSync(libPath, 'utf8');
-  } catch {
-    return;
-  }
-  if (text.includes('wShowWindow: 0')) return; // 已处理过（结构体定义含 wShowWindow 字段名，须匹配赋值形式）
-  let patched = text;
-  // spawnSandboxed（管道 stdio）：flags 0 → CREATE_NEW_CONSOLE
-  patched = patched.replace(
-    /dwFlags: 256,\n(\t*)hStdInput: stdIn\.read,/,
-    'dwFlags: 257,\n$1wShowWindow: 0,\n$1hStdInput: stdIn.read,',
-  );
-  patched = patched.replace(
-    /, 1, 0, null, options\.cwd,/,
-    ', 1, 16, null, options.cwd,',
-  );
-  // spawnSandboxedInherited（继承 stdio，runner 路径）：flags 4 → CREATE_SUSPENDED|CREATE_NEW_CONSOLE
-  patched = patched.replace(
-    /dwFlags: 256,\n(\t*)hStdInput: stdIn,/,
-    'dwFlags: 257,\n$1wShowWindow: 0,\n$1hStdInput: stdIn,',
-  );
-  patched = patched.replace(
-    /, 1, 4, null, options\.cwd,/,
-    ', 1, 20, null, options.cwd,',
-  );
-  if (patched !== text) {
-    fs.writeFileSync(libPath, patched);
-    logTheme('sandbox-console: dsh 沙箱命令控制台窗口补丁已注入（隐藏沙箱命令黑窗）');
-  }
-}
-
-/**
- * 内置 header 布局插件自动注入（与目录选择补丁同模式）：
- * 1) 把 plugins/dsh-header-layout 放置到 node_modules，供 dsh 的 installAnchor
- *    （@deepseek-ai/dsh 包）向上解析到同级 @deepseek-ai 包；
- * 2) 幂等把包名加入 web profile 的 dsh.profile.bundles。
- * 插件遮蔽默认会话 header，为顶部窗口拖动区留白。
- */
-function ensureHeaderLayoutPlugin() {
-  const PLUGIN_NAME = '@deepseek-ai/dsh-desktop-header-layout';
-  const srcDir = path.join(__dirname, '..', 'plugins', 'dsh-header-layout');
-  if (!fs.existsSync(path.join(srcDir, 'package.json'))) return; // 未随应用分发时跳过
-  // 1) 放置到 node_modules（每次启动覆盖同步，随应用版本更新插件）
-  //    注意 PLUGIN_NAME 已含 scope，不能再用 '@deepseek-ai' 拼接，否则路径重复。
-  const destDir = path.join(__dirname, '..', 'node_modules', PLUGIN_NAME);
-  try {
-    fs.cpSync(srcDir, destDir, { recursive: true });
-    logTheme(`header-layout: 插件已同步到 ${destDir}`);
-  } catch (err) {
-    logTheme(`header-layout: 插件放置失败: ${err.message}`);
-  }
-  // 2) 放置到 profile 的模块回退目录：cordis 的 loader entry 是从 profile
-  //    目录向上 import 包的（其他 bundle 靠 heal 在此建立的 symlink 加载），
-  //    内置插件不在 dsh 依赖树里，需显式复制过去才能被 import 到。
-  const fallbackDir = path.join(DSH_HOME, 'profiles', 'node_modules', PLUGIN_NAME);
-  try {
-    fs.cpSync(srcDir, fallbackDir, { recursive: true });
-    logTheme(`header-layout: 插件已同步到 profile 模块回退目录`);
-  } catch (err) {
-    logTheme(`header-layout: profile 模块回退目录放置失败: ${err.message}`);
-  }
-  // 3) 幂等写入 profile bundles（bundle 顺序在 dsh-web-app 之后，patch 层覆盖）
-  const profilePkgPath = path.join(DSH_HOME, 'profiles', 'web', 'package.json');
-  try {
-    const m = JSON.parse(fs.readFileSync(profilePkgPath, 'utf8'));
-    const bundles = m.dsh?.profile?.bundles;
-    if (Array.isArray(bundles) && !bundles.includes(PLUGIN_NAME)) {
-      m.dsh.profile.bundles = [...bundles, PLUGIN_NAME];
-      fs.writeFileSync(profilePkgPath, JSON.stringify(m, null, 2) + '\n');
-      logTheme('header-layout: 已加入 profile bundles');
+function pruneRetiredPlugins() {
+  const RETIRED = ['@deepseek-ai/dsh-desktop-header-layout', '@deepseek-ai/dsh-desktop-chat-navdots'];
+  for (const name of RETIRED) {
+    removePluginFromManifest(name);
+    for (const dir of [
+      path.join(__dirname, '..', 'node_modules', name),
+      path.join(DSH_HOME, 'profiles', 'node_modules', name),
+    ]) {
+      try {
+        fs.rmSync(dir, { recursive: true, force: true });
+      } catch {
+        /* 目录不存在或占用：忽略 */
+      }
     }
-  } catch {
-    /* profile 未初始化或无法解析：dsh 首次启动会重建模板，下次启动再注入 */
-  }
-}
-
-/** 移除 header 布局插件：不再遮蔽默认 header（布局零改动），
- *  导出按钮改由壳层 CSS 隐藏（见 preload.js）。幂等：bundles 里没有就直接跳过。 */
-function removeHeaderLayoutPlugin() {
-  const PLUGIN_NAME = '@deepseek-ai/dsh-desktop-header-layout';
-  const profilePkgPath = path.join(DSH_HOME, 'profiles', 'web', 'package.json');
-  try {
-    const m = JSON.parse(fs.readFileSync(profilePkgPath, 'utf8'));
-    const bundles = m.dsh?.profile?.bundles;
-    if (Array.isArray(bundles) && bundles.includes(PLUGIN_NAME)) {
-      m.dsh.profile.bundles = bundles.filter((b) => b !== PLUGIN_NAME);
-      fs.writeFileSync(profilePkgPath, JSON.stringify(m, null, 2) + '\n');
-      logTheme('header-layout: 已从 profile bundles 移除（不再遮蔽默认 header）');
-    }
-  } catch {
-    /* profile 未初始化或无法解析：dsh 首次启动会重建模板 */
-  }
-}
-
-/**
- * 内置对话导航点插件注入（同 header-layout 的三步模式，已停用）：
- * plugins/dsh-chat-navdots 在对话右侧注入竖排导航点（悬停预览、点击跳转）。
- */
-function ensureChatNavdotsPlugin() {
-  const PLUGIN_NAME = '@deepseek-ai/dsh-desktop-chat-navdots';
-  const srcDir = path.join(__dirname, '..', 'plugins', 'dsh-chat-navdots');
-  if (!fs.existsSync(path.join(srcDir, 'package.json'))) return; // 未随应用分发时跳过
-  // 1) 放置到应用 node_modules（dsh 安装目录解析）
-  const destDir = path.join(__dirname, '..', 'node_modules', PLUGIN_NAME);
-  // 2) 放置到 profile 模块回退目录（cordis loader entry 从 profile 向上 import）
-  const fallbackDir = path.join(DSH_HOME, 'profiles', 'node_modules', PLUGIN_NAME);
-  for (const dir of [destDir, fallbackDir]) {
-    try {
-      fs.cpSync(srcDir, dir, { recursive: true });
-    } catch (err) {
-      logTheme(`chat-navdots: 插件放置失败 (${dir}): ${err.message}`);
-    }
-  }
-  // 3) 幂等写入 profile bundles
-  const profilePkgPath = path.join(DSH_HOME, 'profiles', 'web', 'package.json');
-  try {
-    const m = JSON.parse(fs.readFileSync(profilePkgPath, 'utf8'));
-    const bundles = m.dsh?.profile?.bundles;
-    if (Array.isArray(bundles) && !bundles.includes(PLUGIN_NAME)) {
-      m.dsh.profile.bundles = [...bundles, PLUGIN_NAME];
-      fs.writeFileSync(profilePkgPath, JSON.stringify(m, null, 2) + '\n');
-      logTheme('chat-navdots: 已加入 profile bundles');
-    }
-  } catch {
-    /* profile 未初始化或无法解析：下次启动再注入 */
   }
 }
 
 /** 启动 dsh web 子进程。 */
 function startDsh() {
   ensureDirectoryPickerFix();
-  ensureWindowsHideFix();
-  ensureSandboxConsoleFix();
-  removeHeaderLayoutPlugin();
-  ensureChatNavdotsPlugin();
+  pruneRetiredPlugins();
   updateState({ status: 'starting', url: null, error: null });
 
-  const child = spawn(process.execPath, [DSH_BIN, 'web', '--port', '0'], {
+  const child = spawn(process.execPath, [DSH_BIN, 'web', '--port', '0', '--no-open'], {
     env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
     stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: true,
@@ -587,7 +441,7 @@ function runPluginCommand(args) {
  */
 function verifyWebBoot(timeoutMs = 15000) {
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, [DSH_BIN, 'web', '--port', '0'], {
+    const child = spawn(process.execPath, [DSH_BIN, 'web', '--port', '0', '--no-open'], {
       env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
@@ -1015,12 +869,17 @@ if (!gotTheLock) {
       applyThemeFromPreference();
     });
 
-    // 兜底：settings.yaml 本身被写入（UI 切换偏好）时也重新对齐，覆盖 DOM/IPC 的时序差
-    const settingsFile = path.join(DSH_HOME, 'settings.yaml');
-    fs.watchFile(settingsFile, { interval: 500 }, () => {
-      logTheme('settings.yaml changed');
-      applyThemeFromPreference();
-    });
+    // 兜底：偏好所在文件被写入（UI 切换偏好）时也重新对齐，覆盖 DOM/IPC 的时序差。
+    // 0.1.5+ 偏好写在 profile 的 cordis.patch.yml；旧版是 settings.yaml。
+    for (const file of [
+      path.join(DSH_HOME, 'profiles', 'web', 'cordis.patch.yml'),
+      path.join(DSH_HOME, 'settings.yaml'),
+    ]) {
+      fs.watchFile(file, { interval: 500 }, () => {
+        logTheme(`${path.basename(file)} changed`);
+        applyThemeFromPreference();
+      });
+    }
 
     // “跟随系统”模式下，OS 主题变化（不改 dsh 设置）也同步标题栏覆盖层颜色
     nativeTheme.on('updated', () => {

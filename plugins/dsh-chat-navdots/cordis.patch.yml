@@ -1,6 +1,0 @@
-# DSH Desktop 内置对话导航点插件：在 browser roster 中注册一行 client 插件。
-# 浏览器端注入右侧竖排导航点：悬停显示消息预览、点击滚动到对应消息、
-# 滚动时高亮当前位置（参考 chat.deepseek.com 的对话导航交互）。
-- insert:
-    - id: ui-desktop-chat-navdots
-      name: '@deepseek-ai/dsh-desktop-chat-navdots'
