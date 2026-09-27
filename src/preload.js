@@ -66,8 +66,33 @@ function startThemeSync() {
 // ---- 标题栏可拖动：Windows/Linux 隐藏原生标题栏后页面顶部不可拖动窗口，
 //      注入一条 -webkit-app-region: drag 的条；右侧让出原生系统按钮区 ----
 //      高度锁定 28px（用户指定），不随页面内容变化。
+//      右上角原生窗口按钮浮动区宽度由 overlayControlsWidth() 提供（CSS 变量），
+//      供拖动条与需要右移的页面元素共用同一个值。
+
+/** 右上角原生窗口按钮浮动区宽度（px）：优先用 WCO 实测，不支持时回退经验值。 */
+function overlayControlsWidth() {
+  try {
+    const wco = navigator.windowControlsOverlay;
+    if (wco && wco.visible && typeof wco.getTitlebarAreaRect === 'function') {
+      const rect = wco.getTitlebarAreaRect();
+      const width = Math.round(window.innerWidth - rect.x - rect.width);
+      if (width > 60 && width < 400) return width;
+    }
+  } catch {
+    /* 不支持 WCO：用回退值 */
+  }
+  return 138;
+}
+
 function installDragBar() {
   if (document.getElementById('dsh-desktop-dragbar')) return;
+
+  // 先写变量，CSS 里的 var() 才有正确取值（取不到时用 138px 兜底）
+  const applyOverlayWidth = () => {
+    document.documentElement.style.setProperty('--dsh-overlay-width', `${overlayControlsWidth()}px`);
+  };
+  applyOverlayWidth();
+  window.addEventListener('resize', applyOverlayWidth);
 
   const style = document.createElement('style');
   style.textContent = [
@@ -76,7 +101,7 @@ function installDragBar() {
     '  top: 0;',
     '  left: 0;',
     // 右侧让出原生系统按钮浮动区（titleBarOverlay，Win11 约 138px 宽）
-    '  width: calc(100% - 138px);',
+    '  width: calc(100% - var(--dsh-overlay-width, 138px));',
     '  height: 28px;',
     '  -webkit-app-region: drag;',
     '  z-index: 2147483646;',
@@ -84,6 +109,13 @@ function installDragBar() {
     '}',
     // 隐藏会话 header 的 utilities 容器（导出 log 按钮区），布局其余不动
     '[class$="_headerUtilities"] { display: none !important; }',
+    // 插件管理页：右上角「刷新 / 安装插件」按钮默认在页头 28px 处，会落进原生
+    // 窗口按钮浮动区（约 138×40，贴窗口右上角）被遮住：整体下移让开即可，
+    // 右对齐保持上游原样。最小让开量 = 浮动区高 40 - 页头 padding-top 28 = 12px，
+    // 取 16px 留点间隙。
+    'section[data-plugin-panel] > header [class$="_toolbar"] {',
+    '  margin-top: 16px;',
+    '}',
   ].join('\n');
   (document.head || document.documentElement).appendChild(style);
 
