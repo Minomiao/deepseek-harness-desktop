@@ -72,7 +72,15 @@ npm run dist       # 打包当前平台安装包
 - Electron 44.0.0 + Node.js 24
 - DeepSeek Harness（@deepseek-ai/dsh 0.1.7-rc.2）
 
-> **Electron 必须在 `44.0.0`（或 `43.0.0`），不要用 `^` 或升级补丁版本。**
+> **Electron 必须钉死在 `44.0.0`（或 `43.0.0`），不要用 `^` 或升级补丁版本。**
 > dsh 的 `node-addon-require-builtin` 按 V8 指纹白名单校验宿主运行时，
 > 仅接受 Electron 43.0.0 / 44.0.0 / 45.0.0-alpha.6，其他版本会在启动时报
 > `unsupported Electron runtime fingerprint`。同理 dsh 家族包也需整组同版本升级。
+
+> **打包必须带上 `node_modules/@deepseek-ai` 全量**（见 `build.extraResources`）。
+> dsh 家族里大量包只通过 `peerDependencies` 互相引用，lockfile 中标记为 `peer: true`；
+> electron-builder 收集生产依赖时会跳过这类条目，导致装出来的应用启动即报一串
+> `failed to import` / `ERR_MODULE_NOT_FOUND`（0.1.7 升级时就踩了这个）。
+> 由于 `files` 的通配符会被依赖树裁剪覆盖、不生效，这里改用 `extraResources` 把整个
+> `@deepseek-ai` scope 叠加进 `resources/app/node_modules`；该做法依赖 `asar: false`。
+> 上游每新增一个 peer-only 包都会重新触发该问题，这一条不要删。
