@@ -1,6 +1,6 @@
 {
   "name": "dsh-desktop",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "DeepSeek Harness 桌面壳（Electron）：拉起本地 dsh web 服务并以窗口承载浏览器 UI",
   "main": "src/main.js",
   "private": true,
